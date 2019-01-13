@@ -1,0 +1,201 @@
+---
+title: "Neural Net- Branch"
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,message=FALSE,cache=TRUE)
+```
+
+
+```{r results='asis'}
+library(keras)
+library(tidyquant)
+library(rsample)
+library(recipes)
+library(corrr)
+library(tidyverse)
+library(yardstick)
+```
+
+Read the data into R, change predictor to factor
+```{r results='asis'}
+#read data into R, mutate target variable as factor
+data_18122018v3_anon<-read_csv("C:/Users/Michael/Desktop/data_18122018v3_anon.csv")
+data<-data_18122018v3_anon%>%dplyr::mutate(target_var=as.factor(target_var))%>%select(target_var,var8,var9)
+
+```
+
+```{r}
+#look at data
+glimpse(data)
+#check for NA
+colSums(is.na(data))
+```
+
+
+Split data into training and test sets
+
+```{r}
+# Split test/training sets
+set.seed(100)
+train_test_split <- initial_split(data, prop = 0.8)
+train_test_split
+
+```
+
+```{r}
+# Retrieve train and test sets
+train_tbl <- training(train_test_split)
+test_tbl  <- testing(train_test_split)
+```
+
+Use the recipe package to create a workflow for scaling testing data based on training data
+```{r}
+# Create recipe to scale data
+rec_obj <- recipe(target_var ~., data = train_tbl) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors()) %>%
+  prep(data = train_tbl)
+
+```
+
+Apply the recipe to the rec_obj to two new predictor variables
+
+```{r}
+
+x_train_tbl <- bake(rec_obj, newdata = train_tbl) %>% dplyr::select(-target_var)
+x_test_tbl  <- bake(rec_obj, newdata = test_tbl) %>% dplyr::select(-target_var)
+```
+
+Have a look at one of the new tables I've created
+
+```{r}
+glimpse(x_train_tbl)
+```
+
+Extract the response variable for training and testing sets and place into a vector
+
+```{r}
+
+y_train_vec <- ifelse(pull(train_tbl, target_var) == "1", 1, 0)
+y_test_vec  <- ifelse(pull(test_tbl, target_var) == "1", 1, 0)
+```
+
+The data is now in a suitable format for the neural network
+
+Now, to build the model
+
+```{r}
+
+# Building the model
+model_keras <- keras_model_sequential()
+
+model_keras %>% 
+  
+  # First hidden layer
+  layer_dense(
+    units              = 17, 
+    kernel_initializer = "uniform", 
+    activation         = "relu", 
+    input_shape        = ncol(x_train_tbl)) %>% 
+  
+  # Dropout to prevent overfitting
+  layer_dropout(rate = 0.1) %>%
+  
+  # Second hidden layer
+  layer_dense(
+    units              = 17, 
+    kernel_initializer = "uniform", 
+    activation         = "relu") %>% 
+  
+  # Dropout to prevent overfitting
+  layer_dropout(rate = 0.1) %>%
+  
+  # Output layer
+  layer_dense(
+    units              = 1, 
+    kernel_initializer = "uniform", 
+    activation         = "sigmoid") %>% 
+  
+  # Compile ANN
+  compile(
+    optimizer = 'adam',
+    loss      = 'binary_crossentropy',
+    metrics   = c('accuracy')
+  )
+
+```
+
+This is what the model parameters look like
+
+```{r}
+model_keras
+```
+
+Now, I fit the model, for 100 epochs, with a validation split of 20% of the training dataset. In reality, the model accuracy metrics stop increasing around 30 epochs. 
+
+```{r}
+#Fit model to training data
+
+history <- fit(
+  object           = model_keras, 
+  x                = as.matrix(x_train_tbl), 
+  y                = y_train_vec,
+  batch_size       = 50, 
+  epochs           = 100,
+  validation_split = 0.20
+)
+```
+
+The training and validation metrics show that even though there is a dropout function in the model,overfitting may have occurred 
+```{r}
+print(history)
+
+plot(history)
+```
+
+The metrics show that this model is extremely accurate on the training set.
+
+```{r}
+
+# Predicted Class
+pred <- predict_classes(object = model_keras, x = as.matrix(x_test_tbl)) %>%
+  as.vector()
+
+# Predicted Class Probability
+prob<- predict_proba(object = model_keras, x = as.matrix(x_test_tbl)) %>%
+  as.vector()
+
+
+# Format test data and predictions for yardstick metrics
+est<- tibble(
+  truth      = as.factor(y_test_vec) %>% fct_recode(yes = "1", no = "0"),
+  estimate   = as.factor(pred) %>% fct_recode(yes = "1", no = "0"),
+  class_prob = prob
+)
+
+est
+
+options(yardstick.event_first = FALSE)
+
+
+# Confusion Table
+est %>% conf_mat(truth, estimate)
+# Accuracy
+est %>% metrics(truth, estimate)
+# AUC
+est %>% roc_auc(truth, class_prob)
+# Precision
+est %>% precision(truth, estimate)
+#Recall
+est%>% recall(truth, estimate)
+
+# F1-Statistic
+est%>% f_meas(truth, estimate, beta = 1)
+
+```
+
+#Conclusion
+
+The keras model is very accurate (and I prefer the R version rather than the Python version) and it is good confirmation that the variable selection for the logistic regression model is appropriate.
